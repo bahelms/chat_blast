@@ -1,11 +1,11 @@
-use std::io::{Read, Result, Write};
+use std::io::{BufRead, BufReader, Result};
 use std::net::{TcpListener, TcpStream};
 
-fn handle_stream(mut stream: TcpStream) -> Result<usize> {
-    let mut buffer = [0; 10];
-    let bytes_read = stream.read(&mut buffer)?;
-    println!("Echo: {:?}", std::str::from_utf8(&buffer));
-    let _ = stream.write(&buffer)?;
+fn handle_stream(stream: TcpStream) -> Result<usize> {
+    let mut reader = BufReader::new(stream);
+    let mut buffer = String::new();
+    let bytes_read = reader.read_line(&mut buffer)?;
+    println!("Read: {:?} - bytes: {}", buffer, bytes_read);
     Ok(bytes_read)
 }
 
