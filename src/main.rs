@@ -1,16 +1,34 @@
 use std::io::{BufRead, BufReader, BufWriter, Result, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 
-fn handle_stream(stream: TcpStream) -> Result<usize> {
+fn handle_stream(stream: TcpStream) {
     let mut reader = BufReader::new(&stream);
     let mut buffer = String::new();
-    let bytes_read = reader.read_line(&mut buffer)?;
-    println!("Bytes read: {}", bytes_read);
-
     let mut writer = BufWriter::new(&stream);
-    let _ = writer.write(&buffer.into_bytes())?;
-    writer.flush()?;
-    Ok(bytes_read)
+
+    while match reader.read_line(&mut buffer) {
+        Ok(_) => {
+            if buffer.is_empty() {
+                println!("Connection dropped: {}", stream.peer_addr().unwrap());
+                false
+            } else {
+                // BufWriter seems like overkill here
+                let _ = writer
+                    .write(buffer.as_bytes())
+                    .expect("Problem writing to stream");
+                writer.flush().expect("Error flushing stream writer");
+                buffer.clear();
+                true
+            }
+        }
+        Err(e) => {
+            println!("Error reading stream: {}", e);
+            stream
+                .shutdown(Shutdown::Both)
+                .expect("Error shutting down stream");
+            false
+        }
+    } {}
 }
 
 fn main() -> Result<()> {
@@ -22,7 +40,10 @@ fn main() -> Result<()> {
 
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => handle_stream(stream)?,
+            Ok(stream) => {
+                println!("New connection: {}", stream.peer_addr().unwrap());
+                handle_stream(stream)
+            }
             Err(msg) => panic!("The stream is borked: {}", msg),
         };
     }
