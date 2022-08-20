@@ -1,10 +1,11 @@
 use std::io::{BufRead, BufReader, BufWriter, Result, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::thread;
 
 fn handle_stream(stream: TcpStream) {
     let mut reader = BufReader::new(&stream);
-    let mut buffer = String::new();
     let mut writer = BufWriter::new(&stream);
+    let mut buffer = String::new();
 
     while match reader.read_line(&mut buffer) {
         Ok(_) => {
@@ -42,10 +43,10 @@ fn main() -> Result<()> {
         match stream {
             Ok(stream) => {
                 println!("New connection: {}", stream.peer_addr().unwrap());
-                handle_stream(stream)
+                thread::spawn(move || handle_stream(stream));
             }
             Err(msg) => panic!("The stream is borked: {}", msg),
-        };
+        }
     }
     Ok(())
 }
