@@ -8,34 +8,47 @@ fn handle_client(stream: TcpStream, publisher: Sender<String>, consumer: Receive
     let mut writer = BufWriter::new(&stream);
     let mut buffer = String::new();
 
-    // see if consumer has msg
-    // don't block on read_line
-    while match reader.read_line(&mut buffer) {
-        Ok(_) => {
-            if buffer.is_empty() {
-                println!("Connection dropped: {}", stream.peer_addr().unwrap());
-                false
-            } else {
-                publisher
-                    .send(buffer.clone())
-                    .expect("Error publishing message.");
-                // BufWriter seems like overkill here
-                // let _ = writer
-                //     .write(buffer.as_bytes())
-                //     .expect("Problem writing to stream");
-                // writer.flush().expect("Error flushing stream writer");
-                buffer.clear();
-                true
+    stream
+        .set_nonblocking(true)
+        .expect("Set nonblocking stream failed.");
+
+    loop {
+        match reader.read_line(&mut buffer) {
+            Ok(_) => {
+                if buffer.is_empty() {
+                    println!("Connection dropped: {}", stream.peer_addr().unwrap());
+                    // unsub from publisher
+                    break;
+                } else {
+                    publisher
+                        .send(buffer.clone())
+                        .expect("Error publishing message.");
+                    buffer.clear();
+                }
+            }
+
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // since read_line is not blocking, this empty block just spins
+                // the loop as fast as it can, until something enters the stream :/
+            }
+
+            Err(e) => {
+                println!("Error reading stream: {}", e);
+                stream
+                    .shutdown(Shutdown::Both)
+                    .expect("Error shutting down stream");
+                // unsub from publisher
             }
         }
-        Err(e) => {
-            println!("Error reading stream: {}", e);
-            stream
-                .shutdown(Shutdown::Both)
-                .expect("Error shutting down stream");
-            false
+
+        if let Ok(msg) = consumer.try_recv() {
+            // BufWriter seems like overkill here
+            let _ = writer
+                .write(msg.as_bytes())
+                .expect("Problem writing to stream");
+            writer.flush().expect("Error flushing stream writer");
         }
-    } {}
+    }
 }
 
 fn start_publisher(publish: Receiver<String>, subscribers: Receiver<Sender<String>>) {
@@ -47,7 +60,9 @@ fn start_publisher(publish: Receiver<String>, subscribers: Receiver<Sender<Strin
         }
 
         if let Ok(msg) = publish.try_recv() {
-            dbg!(&msg);
+            for sub in &subs {
+                sub.send(msg.clone()).expect("Failed to broadcast message.");
+            }
         }
     }
 }
