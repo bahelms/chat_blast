@@ -6,11 +6,12 @@ use std::thread::ThreadId;
 
 type Message = String;
 
-fn handle_client(
-    stream: TcpStream,
-    publisher: Sender<(ThreadId, Message)>,
-    consumer: Receiver<String>,
-) {
+enum Event {
+    Message(ThreadId, Message),
+    Stop(ThreadId),
+}
+
+fn handle_client(stream: TcpStream, publisher: Sender<Event>, consumer: Receiver<Message>) {
     let mut reader = BufReader::new(&stream);
     let mut writer = BufWriter::new(&stream);
     let mut buffer = String::new();
@@ -24,11 +25,13 @@ fn handle_client(
             Ok(_) => {
                 if buffer.is_empty() {
                     println!("Connection dropped: {}", stream.peer_addr().unwrap());
-                    // unsub from publisher
+                    publisher
+                        .send(Event::Stop(thread::current().id()))
+                        .expect("Error unsubscribing.");
                     break;
                 } else {
                     publisher
-                        .send((thread::current().id(), buffer.clone()))
+                        .send(Event::Message(thread::current().id(), buffer.clone()))
                         .expect("Error publishing message.");
                     buffer.clear();
                 }
@@ -44,7 +47,9 @@ fn handle_client(
                 stream
                     .shutdown(Shutdown::Both)
                     .expect("Error shutting down stream");
-                // unsub from publisher
+                publisher
+                    .send(Event::Stop(thread::current().id()))
+                    .expect("Error unsubscribing.");
             }
         }
 
@@ -58,10 +63,7 @@ fn handle_client(
     }
 }
 
-fn start_publisher(
-    publish: Receiver<(ThreadId, Message)>,
-    subscribers: Receiver<(ThreadId, Sender<Message>)>,
-) {
+fn start_publisher(publish: Receiver<Event>, subscribers: Receiver<(ThreadId, Sender<Message>)>) {
     let mut subs = Vec::new();
 
     loop {
@@ -69,11 +71,17 @@ fn start_publisher(
             subs.push(new_sub);
         }
 
-        if let Ok((thread_id, msg)) = publish.try_recv() {
+        if let Ok(Event::Message(thread_id, msg)) = publish.try_recv() {
             for (sub_id, sub) in &subs {
                 if *sub_id != thread_id {
                     sub.send(msg.clone()).expect("Failed to broadcast message.");
                 }
+            }
+        }
+
+        if let Ok(Event::Stop(thread_id)) = publish.try_recv() {
+            if let Some(sub_idx) = subs.iter().position(|(sub_id, _)| *sub_id == thread_id) {
+                subs.remove(sub_idx);
             }
         }
     }
