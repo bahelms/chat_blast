@@ -30,6 +30,7 @@ fn handle_client(stream: TcpStream, publisher: Sender<Event>, consumer: Receiver
                         .expect("Error unsubscribing.");
                     break;
                 } else {
+                    dbg!(&buffer);
                     publisher
                         .send(Event::Message(thread::current().id(), buffer.clone()))
                         .expect("Error publishing message.");
@@ -54,7 +55,7 @@ fn handle_client(stream: TcpStream, publisher: Sender<Event>, consumer: Receiver
         }
 
         if let Ok(msg) = consumer.try_recv() {
-            // BufWriter seems like overkill here
+            println!("Received msg {}", msg);
             let _ = writer
                 .write(msg.as_bytes())
                 .expect("Problem writing to stream");
@@ -72,6 +73,7 @@ fn start_publisher(publish: Receiver<Event>, subscribers: Receiver<(ThreadId, Se
         }
 
         if let Ok(Event::Message(thread_id, msg)) = publish.try_recv() {
+            println!("Broadcasting from {:?}: {}", thread_id, msg);
             for (sub_id, sub) in &subs {
                 if *sub_id != thread_id {
                     sub.send(msg.clone()).expect("Failed to broadcast message.");
