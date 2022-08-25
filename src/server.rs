@@ -43,7 +43,8 @@ async fn handle_stream(
                     println!("Connection dropped: {}", addr);
                     break;
                 }
-                handle_incoming_message(result, &publisher, &mut buffer, addr);
+                handle_incoming_message(buffer.clone(), result, &publisher, addr);
+                buffer.clear();
             }
 
             event = consumer.recv() => {
@@ -58,17 +59,16 @@ async fn handle_stream(
 }
 
 fn handle_incoming_message(
-    result: Result<usize, std::io::Error>,
+    message: String,
+    read_result: Result<usize, std::io::Error>,
     publisher: &Sender<Event>,
-    buffer: &mut String,
     addr: SocketAddr,
 ) {
-    match result {
+    match read_result {
         Ok(_) => {
             publisher
-                .send(Event(addr, buffer.clone()))
+                .send(Event(addr, message))
                 .expect("Error publishing message.");
-            buffer.clear();
         }
         Err(e) => {
             println!("Error reading stream: {}", e);
