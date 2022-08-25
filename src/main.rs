@@ -4,7 +4,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast::{self, Receiver, Sender};
 
 type Message = String;
-type Event = (SocketAddr, Message);
+
+#[derive(Debug, Clone)]
+struct Event(SocketAddr, Message);
 
 async fn handle_stream(
     stream: TcpStream,
@@ -24,7 +26,7 @@ async fn handle_stream(
                             break;
                         } else {
                             publisher
-                                .send((addr, buffer.clone()))
+                                .send(Event(addr, buffer.clone()))
                                 .expect("Error publishing message.");
                             buffer.clear();
                         }
@@ -35,7 +37,7 @@ async fn handle_stream(
                 }
             }
             event = consumer.recv() => {
-                let (id, msg) = event.expect("Parsing event failed");
+                let Event(id, msg) = event.expect("Parsing event failed");
                 if id != addr {
                     let formatted_msg = format!("[{}]: {}", id, msg);
                     let _ = reader.write(formatted_msg.as_bytes()).await.expect("Broadcast write failed");
