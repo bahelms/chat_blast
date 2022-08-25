@@ -1,125 +1,73 @@
-use std::io::{BufRead, BufReader, BufWriter, Result, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::thread;
-use std::thread::ThreadId;
+use std::net::SocketAddr;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::broadcast::{self, Receiver, Sender};
 
 type Message = String;
+type Event = (SocketAddr, Message);
 
-enum Event {
-    Message(ThreadId, Message),
-    Stop(ThreadId),
-}
-
-fn handle_client(stream: TcpStream, publisher: Sender<Event>, consumer: Receiver<Message>) {
-    let mut reader = BufReader::new(&stream);
-    let mut writer = BufWriter::new(&stream);
+async fn handle_stream(
+    stream: TcpStream,
+    publisher: Sender<Event>,
+    mut consumer: Receiver<Event>,
+    addr: std::net::SocketAddr,
+) {
+    let mut reader = BufReader::new(stream);
     let mut buffer = String::new();
-
-    stream
-        .set_nonblocking(true)
-        .expect("Set nonblocking stream failed.");
-
     loop {
-        match reader.read_line(&mut buffer) {
-            Ok(_) => {
-                if buffer.is_empty() {
-                    println!("Connection dropped: {}", stream.peer_addr().unwrap());
-                    publisher
-                        .send(Event::Stop(thread::current().id()))
-                        .expect("Error unsubscribing.");
-                    break;
-                } else {
-                    dbg!(&buffer);
-                    publisher
-                        .send(Event::Message(thread::current().id(), buffer.clone()))
-                        .expect("Error publishing message.");
-                    buffer.clear();
+        tokio::select! {
+            result = reader.read_line(&mut buffer) => {
+                match result {
+                    Ok(_) => {
+                        if buffer.is_empty() {
+                            println!("Connection dropped: {}", addr);
+                            break;
+                        } else {
+                            publisher
+                                .send((addr, buffer.clone()))
+                                .expect("Error publishing message.");
+                            buffer.clear();
+                        }
+                    }
+                    Err(e) => {
+                        println!("Error reading stream: {}", e);
+                    }
                 }
             }
-
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // since read_line is not blocking, this empty block just spins
-                // the loop as fast as it can, until something enters the stream :/
-            }
-
-            Err(e) => {
-                println!("Error reading stream: {}", e);
-                stream
-                    .shutdown(Shutdown::Both)
-                    .expect("Error shutting down stream");
-                publisher
-                    .send(Event::Stop(thread::current().id()))
-                    .expect("Error unsubscribing.");
-            }
-        }
-
-        if let Ok(msg) = consumer.try_recv() {
-            println!("Received msg {}", msg);
-            let _ = writer
-                .write(msg.as_bytes())
-                .expect("Problem writing to stream");
-            writer.flush().expect("Error flushing stream writer");
-        }
-    }
-}
-
-fn start_publisher(publish: Receiver<Event>, subscribers: Receiver<(ThreadId, Sender<Message>)>) {
-    let mut subs = Vec::new();
-
-    loop {
-        if let Ok(new_sub) = subscribers.try_recv() {
-            subs.push(new_sub);
-        }
-
-        if let Ok(Event::Message(thread_id, msg)) = publish.try_recv() {
-            println!("Broadcasting from {:?}: {}", thread_id, msg);
-            for (sub_id, sub) in &subs {
-                if *sub_id != thread_id {
-                    sub.send(msg.clone()).expect("Failed to broadcast message.");
+            event = consumer.recv() => {
+                let (id, msg) = event.expect("Parsing event failed");
+                if id != addr {
+                    let formatted_msg = format!("[{}]: {}", id, msg);
+                    let _ = reader.write(formatted_msg.as_bytes()).await.expect("Broadcast write failed");
                 }
             }
         }
-
-        if let Ok(Event::Stop(thread_id)) = publish.try_recv() {
-            if let Some(sub_idx) = subs.iter().position(|(sub_id, _)| *sub_id == thread_id) {
-                subs.remove(sub_idx);
-            }
-        }
     }
 }
 
-fn start_server(address: String, port: String) -> Result<()> {
-    let listener = TcpListener::bind(format!("{}:{}", address, port))?;
-    let (pub_tx, publish) = channel();
-    let (subscribe, subscribers) = channel();
-    thread::spawn(|| start_publisher(publish, subscribers));
+async fn start_server(address: String, port: String) {
+    let location = format!("{}:{}", address, port);
+    let listener = TcpListener::bind(&location)
+        .await
+        .expect("Failed to bind to addr");
 
-    println!("Chat Blast -- listening on {}:{}", address, port);
+    println!("Chat Blast -- listening on {}", location);
 
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                println!("New connection: {}", stream.peer_addr().unwrap());
-                let publisher = pub_tx.clone();
-                let (consumer_tx, consumer_rx) = channel();
-                let thread_id =
-                    thread::spawn(move || handle_client(stream, publisher, consumer_rx))
-                        .thread()
-                        .id();
-                subscribe
-                    .send((thread_id, consumer_tx))
-                    .expect("Error subscribing thread.");
-            }
-            Err(msg) => panic!("The stream is borked: {}", msg),
-        }
+    let (tx, _) = broadcast::channel(32);
+    loop {
+        let (stream, addr) = listener.accept().await.unwrap();
+        println!("Connection accepted: {}", addr);
+        let publisher = tx.clone();
+        let consumer = tx.subscribe();
+        tokio::spawn(async move {
+            handle_stream(stream, publisher, consumer, addr).await;
+        });
     }
-    Ok(())
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() {
     let address = "127.0.0.1".to_string();
     let port = "4888".to_string();
-
-    start_server(address, port)
+    start_server(address, port).await;
 }
