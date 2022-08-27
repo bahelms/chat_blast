@@ -8,7 +8,7 @@ type Message = String;
 #[derive(Debug, Clone)]
 struct Event(SocketAddr, Message);
 
-pub async fn start_server(address: String, port: String) {
+pub async fn start(address: String, port: String) {
     let location = format!("{}:{}", address, port);
     let listener = TcpListener::bind(&location)
         .await
